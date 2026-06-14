@@ -1,0 +1,12 @@
+# Slim dependency set for deploying the Streamlit app (Streamlit Community Cloud).
+# Only what the app + the saved model need at runtime -- no mlflow / fastapi /
+# matplotlib (those are for training & the API, not the live demo).
+# Versions match training so models/model.joblib unpickles correctly.
+streamlit==1.57.0
+pandas==2.3.3
+numpy==2.4.4
+scikit-learn==1.8.0
+xgboost==3.2.0
+lightgbm==4.6.0
+joblib==1.5.3
+plotly==6.7.0

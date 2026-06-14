@@ -1,0 +1,29 @@
+# Pinned versions = reproducible installs everywhere (local, Docker, CI, cloud).
+# scikit-learn/pandas/numpy versions MUST match training so the saved
+# model.joblib unpickles correctly when served.
+
+# --- data + modelling ---
+pandas==2.3.3
+numpy==2.4.4
+scikit-learn==1.8.0
+xgboost==3.2.0
+lightgbm==4.6.0
+joblib==1.5.3
+PyYAML==6.0.1
+
+# --- experiment tracking ---
+mlflow==3.13.0
+
+# --- model serving (API) ---
+fastapi==0.136.3
+uvicorn==0.46.0
+pydantic==2.13.4
+
+# --- interactive app + plots ---
+streamlit==1.57.0
+plotly==6.7.0
+matplotlib==3.10.9
+
+# --- utilities + tests ---
+requests==2.31.0
+pytest==9.0.3

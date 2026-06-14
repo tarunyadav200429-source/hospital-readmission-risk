@@ -1,0 +1,45 @@
+# =============================================================================
+# config.yaml  --  ONE place for every setting in the project.
+#
+# Why a config file?  A real production project never hard-codes paths, URLs or
+# model settings inside the code. We keep them here so that:
+#   * anyone can see/change settings without reading the code,
+#   * the code stays clean and reusable,
+#   * the exact settings used for a run are saved alongside results (reproducible).
+# Every script reads this file via src/config.py.
+# =============================================================================
+
+# ---- Where the raw public dataset comes from -------------------------------
+data:
+  # UCI "Diabetes 130-US hospitals (1999-2008)" dataset.
+  source_url: "https://archive.ics.uci.edu/ml/machine-learning-databases/00296/dataset_diabetes.zip"
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  # The two files that live inside the downloaded zip:
+  main_file: "diabetic_data.csv"      # one row per hospital encounter
+  mapping_file: "IDs_mapping.csv"     # decodes the numeric ID codes to text
+
+# ---- The prediction problem ------------------------------------------------
+target:
+  # Original column is "readmitted" with 3 values: "<30", ">30", "NO".
+  # We turn it into a BINARY target: readmitted within 30 days (1) vs not (0).
+  raw_column: "readmitted"
+  positive_label: "<30"               # readmitted in under 30 days = the risk we predict
+  name: "readmitted_within_30d"       # name of our new 0/1 target column
+
+# ---- Train / test split ----------------------------------------------------
+split:
+  test_size: 0.20                     # 20% held out for honest final evaluation
+  random_state: 42                    # fixed seed -> same split every run (reproducible)
+
+# ---- Model artifacts -------------------------------------------------------
+model:
+  output_dir: "models"
+  registered_name: "readmission_risk_model"
+
+# ---- MLflow experiment tracking --------------------------------------------
+mlflow:
+  experiment_name: "hospital-readmission-risk"
+  # MLflow 3.x stores run params/metrics in a SQLite database; model artifacts
+  # go to ./mlartifacts. Both are local -- no server needed.
+  tracking_uri: "sqlite:///mlflow.db"

@@ -1,0 +1,4 @@
+[tool.pytest.ini_options]
+# Add the repo root to the import path so tests can do `from src... import ...`.
+pythonpath = ["."]
+testpaths = ["tests"]
