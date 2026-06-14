@@ -31,3 +31,6 @@ venv/
 .DS_Store
 *.swp
 .vscode/
+
+# ---- Stray screenshots (only intentionally-named images are committed) ----
+Screenshot*.png

@@ -11,6 +11,10 @@ containerised deployment → a live interactive app → drift monitoring.
 > **🔗 Live demo:** https://tarun-readmission-risk.streamlit.app
 > **📊 Experiment tracking, REST API, Docker, CI, monitoring** — all included.
 
+![The live app scoring a patient's 30-day readmission risk](app_preview.png)
+*The live Streamlit app: enter a patient's details and get a **calibrated** readmission
+probability, shown against the decision threshold tuned on held-out data.*
+
 ---
 
 ## What I set out to do
