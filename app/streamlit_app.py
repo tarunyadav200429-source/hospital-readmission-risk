@@ -162,6 +162,24 @@ def main():
             "prediction."
         )
 
+        # --- the honest, unbiased headline: the held-out TEST set ---
+        test_path = OUT_DIR / "test_metrics.json"
+        if test_path.exists():
+            tm = json.loads(test_path.read_text())
+            roc_ci, pr_ci = tm.get("roc_ci"), tm.get("pr_ci")
+            c1, c2 = st.columns(2)
+            c1.metric("Held-out test ROC-AUC", f"{tm['roc_auc']:.3f}",
+                      help=(f"95% CI {roc_ci[0]:.3f}–{roc_ci[1]:.3f}"
+                            if roc_ci else None))
+            c2.metric("Held-out test PR-AUC", f"{tm['pr_auc']:.3f}",
+                      help=(f"95% CI {pr_ci[0]:.3f}–{pr_ci[1]:.3f}; "
+                            f"base rate {tm.get('base_rate', 0):.3f}"
+                            if pr_ci else None))
+
+        # --- model comparison: tuned on train, SELECTED on validation ---
+        st.markdown("**Model comparison** — each model is Bayesian-tuned on the "
+                    "training set; the winner is picked on a separate validation "
+                    "set, then judged once on the test set above.")
         comp_path = OUT_DIR / "model_comparison.json"
         if comp_path.exists():
             comp = json.loads(comp_path.read_text())
@@ -169,14 +187,17 @@ def main():
             for name, m in comp["results"].items():
                 rows.append({
                     "Model": name,
-                    "ROC-AUC": round(m["test_roc_auc"], 3),
-                    "PR-AUC": round(m["test_pr_auc"], 3),
-                    "Recall": round(m["test_recall"], 3),
-                    "Precision": round(m["test_precision"], 3),
+                    "Validation ROC-AUC": round(m["val_roc_auc"], 3),
+                    "Validation PR-AUC": round(m["val_pr_auc"], 3),
                 })
-            df = pd.DataFrame(rows).sort_values("ROC-AUC", ascending=False)
+            df = pd.DataFrame(rows).sort_values("Validation PR-AUC", ascending=False)
             st.dataframe(df, hide_index=True, use_container_width=True)
-            st.caption(f"Best model: **{comp['best']}** (selected by ROC-AUC).")
+            sel = {"val_pr_auc": "validation PR-AUC",
+                   "val_roc_auc": "validation ROC-AUC"}.get(
+                       comp.get("selection_metric"), "validation score")
+            st.caption(f"Best model: **{comp['best']}** (selected by {sel}). The "
+                       "models are statistically close — see the README for the "
+                       "Friedman + Wilcoxon-Holm comparison.")
 
         # show the evaluation plots if they were generated
         for img, cap in [
