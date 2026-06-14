@@ -1,0 +1,97 @@
+{
+  "assumptions": {
+    "logistic_regression_parametric": {
+      "independence": "Satisfied by design: only the first encounter per patient is kept, so no patient contributes multiple correlated rows.",
+      "vif": {
+        "all": {
+          "age": 1.1,
+          "time_in_hospital": 1.41,
+          "num_lab_procedures": 1.16,
+          "num_procedures": 1.21,
+          "num_medications": 1.59,
+          "number_outpatient": Infinity,
+          "number_emergency": Infinity,
+          "number_inpatient": Infinity,
+          "number_diagnoses": 1.18,
+          "total_prior_visits": Infinity,
+          "num_med_changes": 1.08
+        },
+        "flagged_gt_5": {
+          "number_outpatient": Infinity,
+          "number_emergency": Infinity,
+          "number_inpatient": Infinity,
+          "total_prior_visits": Infinity
+        },
+        "verdict": "4 numeric feature(s) with VIF>5: ['number_outpatient', 'number_emergency', 'number_inpatient', 'total_prior_visits'] -- watch the logistic coefficients (trees are unaffected)."
+      },
+      "events_per_variable": {
+        "positive_events": 5028,
+        "approx_predictors_after_onehot": 188,
+        "epv": 26.7,
+        "verdict": "OK -- EPV >= 10, coefficients well-supported"
+      },
+      "linearity_in_logit": "Assumed, not guaranteed. We mitigate it two ways: (a) the regularised logistic model is only a BASELINE; (b) the selected production model is tree-based, which captures non-linearities the logit form cannot."
+    },
+    "tree_models_nonparametric": {
+      "distribution": "None assumed -- trees split on thresholds, not on any distributional form.",
+      "linearity": "Not required -- trees model non-linearities and interactions automatically.",
+      "multicollinearity": "Harmless to predictions (only splits feature IMPORTANCE among correlated features).",
+      "feature_scaling": "Not required -- splits are scale-invariant (we scale only for the logistic baseline).",
+      "what_they_DO_need": "Enough samples per leaf (we tune min_samples_leaf / min_child_samples) and a stable train/serve distribution (checked via PSI drift monitoring)."
+    }
+  },
+  "model_comparison": {
+    "scoring": "average_precision",
+    "cv_folds": 5,
+    "mean_cv_score": {
+      "xgboost": 0.1837,
+      "lightgbm": 0.1829,
+      "random_forest": 0.1797,
+      "logistic_regression": 0.1686
+    },
+    "ranking_best_first": [
+      "xgboost",
+      "lightgbm",
+      "random_forest",
+      "logistic_regression"
+    ],
+    "friedman": {
+      "chi2": 10.68,
+      "p_value": 0.0136,
+      "verdict": "models DIFFER (reject 'all equal')"
+    },
+    "wilcoxon_holm": {
+      "logistic_regression vs random_forest": {
+        "p_raw": 0.0625,
+        "p_holm": 0.375,
+        "significant": false
+      },
+      "logistic_regression vs xgboost": {
+        "p_raw": 0.0625,
+        "p_holm": 0.375,
+        "significant": false
+      },
+      "logistic_regression vs lightgbm": {
+        "p_raw": 0.0625,
+        "p_holm": 0.375,
+        "significant": false
+      },
+      "random_forest vs xgboost": {
+        "p_raw": 0.125,
+        "p_holm": 0.375,
+        "significant": false
+      },
+      "random_forest vs lightgbm": {
+        "p_raw": 0.1875,
+        "p_holm": 0.375,
+        "significant": false
+      },
+      "xgboost vs lightgbm": {
+        "p_raw": 1.0,
+        "p_holm": 1.0,
+        "significant": false
+      }
+    },
+    "caveat": "Only ONE dataset and 5 folds -> this comparison is ILLUSTRATIVE and low-powered. The thesis ran the same Friedman+Wilcoxon-Holm protocol across many datasets, where it is properly powered."
+  }
+}

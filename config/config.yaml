@@ -37,6 +37,19 @@ model:
   output_dir: "models"
   registered_name: "readmission_risk_model"
 
+# ---- Hyperparameter tuning (Bayesian optimisation) -------------------------
+# Instead of guessing hyperparameters, we SEARCH for good ones with Bayesian
+# optimisation (scikit-optimize's BayesSearchCV). It is far more efficient than
+# grid/random search: it builds a probabilistic model of "settings -> score" and
+# spends its next trials where good settings are most likely to be -- the same
+# method used in the credit-risk thesis these models are modelled on.
+tuning:
+  enabled: true        # set false to fall back to sensible fixed defaults (fast)
+  n_iter: 32           # hyperparameter combinations Bayes-opt tries PER model
+  cv: 5                # inner cross-validation folds (also the blocks for the Friedman test)
+  scoring: "average_precision"   # PR-AUC: the right ranking metric for a ~9%-positive problem
+  random_state: 2025   # fixed seed -> identical search every run (reproducible)
+
 # ---- MLflow experiment tracking --------------------------------------------
 mlflow:
   experiment_name: "hospital-readmission-risk"

@@ -1,22 +1,58 @@
 {
   "best": "xgboost",
-  "selection_metric": "val_roc_auc",
+  "selection_metric": "val_pr_auc",
+  "tuning": "bayesian",
   "results": {
     "logistic_regression": {
-      "val_roc_auc": 0.6420226310402894,
-      "val_pr_auc": 0.16387408458496378
+      "val_roc_auc": 0.6425714765073222,
+      "val_pr_auc": 0.16389585334458429,
+      "cv_best_pr_auc": 0.16859082223609706,
+      "best_params": {
+        "clf__C": 1.7216421777422415,
+        "clf__penalty": "l1"
+      }
     },
     "random_forest": {
-      "val_roc_auc": 0.6502547510879659,
-      "val_pr_auc": 0.17596410033263932
+      "val_roc_auc": 0.6529841802006402,
+      "val_pr_auc": 0.17785558515748096,
+      "cv_best_pr_auc": 0.17971210151674238,
+      "best_params": {
+        "clf__max_depth": 19,
+        "clf__max_features": 0.12144306370765115,
+        "clf__min_samples_leaf": 5,
+        "clf__min_samples_split": 8,
+        "clf__n_estimators": 393
+      }
     },
     "xgboost": {
-      "val_roc_auc": 0.6575238627581627,
-      "val_pr_auc": 0.1811011704084713
+      "val_roc_auc": 0.6580394278345323,
+      "val_pr_auc": 0.18147813617170255,
+      "cv_best_pr_auc": 0.18365582246050477,
+      "best_params": {
+        "clf__colsample_bytree": 0.8038848666254539,
+        "clf__gamma": 0.0,
+        "clf__learning_rate": 0.01,
+        "clf__max_depth": 6,
+        "clf__min_child_weight": 1,
+        "clf__n_estimators": 500,
+        "clf__reg_alpha": 0.001,
+        "clf__reg_lambda": 0.001,
+        "clf__subsample": 0.8063690761385301
+      }
     },
     "lightgbm": {
-      "val_roc_auc": 0.6463879817953141,
-      "val_pr_auc": 0.17342449781256963
+      "val_roc_auc": 0.6568703682578253,
+      "val_pr_auc": 0.18114982434776664,
+      "cv_best_pr_auc": 0.18286788822866756,
+      "best_params": {
+        "clf__colsample_bytree": 1.0,
+        "clf__learning_rate": 0.01,
+        "clf__min_child_samples": 5,
+        "clf__n_estimators": 500,
+        "clf__num_leaves": 70,
+        "clf__reg_lambda": 0.001,
+        "clf__subsample": 0.6890056946775969
+      }
     }
   }
 }
