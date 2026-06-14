@@ -1,23 +1,21 @@
 """
-train.py  --  STEP 3: train several models and track every run with MLflow.
+train.py  --  STEP 3: select a model, calibrate it, and track everything in MLflow.
 
-What "experiment tracking" means: instead of running models and losing the
-numbers, we log each run to MLflow -- its parameters, its metrics, and the
-trained model file. Later we (or a teammate) can open the MLflow UI and compare
-every run side by side. This is standard practice on real data-science teams and
-is exactly the production skill this project is meant to demonstrate.
+This uses a clean THREE-WAY split so nothing leaks:
+    * train      -> fit the candidate models
+    * validation -> choose the best model AND tune the decision threshold
+    * test       -> NEVER touched here (only src/models/evaluate.py uses it)
 
-For each candidate model we:
-  1. Build a full Pipeline = preprocessing + classifier (so encoding/scaling are
-     re-fit on each training fold -> no leakage).
-  2. Estimate honest performance with 5-fold cross-validation on the TRAIN set.
-  3. Re-fit on all of TRAIN and evaluate once on the held-out TEST set.
-  4. Log params + metrics + the model to MLflow.
-
-Imbalance handling: the positive class is ~9%. Rather than SMOTE (used in the
-thesis), here we use cost-sensitive learning -- class_weight="balanced" for the
-linear/forest models and scale_pos_weight for the boosters. It is lighter to
-serve in production and avoids synthesising fake patients.
+Design decisions (and why):
+  * No class reweighting. Reweighting (scale_pos_weight / class_weight) does not
+    improve ranking (ROC-AUC) and it DISTORTS the predicted probabilities, which
+    we display in the app. Instead we keep natural probabilities and handle the
+    9% imbalance purely through the tuned decision threshold.
+  * Probability calibration. We wrap the chosen model in CalibratedClassifierCV
+    (isotonic) so the numbers it outputs behave like real probabilities -- a
+    patient the model scores at "10%" really is readmitted ~10% of the time.
+  * Threshold tuned on VALIDATION, never on test, so the reported test numbers
+    are honest.
 
     python -m src.models.train
 """
@@ -26,20 +24,19 @@ import json
 
 import joblib
 import mlflow
-import mlflow.sklearn
 import numpy as np
 from lightgbm import LGBMClassifier
+from sklearn.base import clone
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     average_precision_score,
-    brier_score_loss,
     f1_score,
-    precision_score,
-    recall_score,
+    precision_recall_curve,
     roc_auc_score,
 )
-from sklearn.model_selection import StratifiedKFold, cross_val_score
+from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from xgboost import XGBClassifier
 
@@ -47,147 +44,117 @@ from src.config import load_config, PROJECT_ROOT
 from src.models.pipeline import build_preprocessor, load_model_input, split_data
 
 
-def get_candidate_models(scale_pos_weight: float) -> dict:
-    """Return the dict of {name: classifier}. All are imbalance-aware."""
+def get_candidate_models() -> dict:
+    """Candidate classifiers. Imbalance is handled by the threshold, NOT by
+    reweighting, so that the predicted probabilities stay calibratable."""
     return {
-        "logistic_regression": LogisticRegression(
-            max_iter=1000, class_weight="balanced"
-        ),
+        "logistic_regression": LogisticRegression(max_iter=1000),
         "random_forest": RandomForestClassifier(
-            n_estimators=300, max_depth=12, n_jobs=1,
-            class_weight="balanced", random_state=42
-        ),
+            n_estimators=300, max_depth=12, n_jobs=1, random_state=42),
         "xgboost": XGBClassifier(
             n_estimators=400, max_depth=5, learning_rate=0.05,
             subsample=0.8, colsample_bytree=0.8,
-            scale_pos_weight=scale_pos_weight,
-            eval_metric="logloss", n_jobs=1, random_state=42
-        ),
+            eval_metric="logloss", n_jobs=1, random_state=42),
         "lightgbm": LGBMClassifier(
             n_estimators=400, max_depth=-1, learning_rate=0.05,
             subsample=0.8, colsample_bytree=0.8,
-            scale_pos_weight=scale_pos_weight,
-            n_jobs=1, random_state=42, verbose=-1
-        ),
+            n_jobs=1, random_state=42, verbose=-1),
     }
 
 
-def evaluate_on_test(pipe, X_test, y_test) -> dict:
-    """Compute a suite of metrics on the held-out test set."""
-    # predict_proba gives P(readmit). [:, 1] = probability of the positive class.
-    proba = pipe.predict_proba(X_test)[:, 1]
-    pred = (proba >= 0.5).astype(int)   # default-threshold labels (tuned later)
-    return {
-        # Threshold-INDEPENDENT (the fair headline metrics for imbalance):
-        "test_roc_auc": roc_auc_score(y_test, proba),
-        "test_pr_auc": average_precision_score(y_test, proba),  # area under PR curve
-        "test_brier": brier_score_loss(y_test, proba),          # calibration (lower=better)
-        # Threshold-dependent (at 0.5, before tuning):
-        "test_f1": f1_score(y_test, pred),
-        "test_recall": recall_score(y_test, pred),
-        "test_precision": precision_score(y_test, pred, zero_division=0),
-    }
+def best_f1_threshold(y_true, proba) -> float:
+    """Threshold that maximises F1 -- tuned on VALIDATION data only."""
+    precision, recall, thresholds = precision_recall_curve(y_true, proba)
+    f1 = 2 * precision * recall / (precision + recall + 1e-9)
+    return float(thresholds[np.argmax(f1[:-1])])
 
 
 def main():
     cfg = load_config()
-
-    # --- point MLflow at our local tracking store + experiment ---
     mlflow.set_tracking_uri(cfg["mlflow"]["tracking_uri"])
     mlflow.set_experiment(cfg["mlflow"]["experiment_name"])
+    seed = cfg["split"]["random_state"]
 
-    # --- load data + split ---
+    # --- three-way split: train_full -> (train, val); test held out ----------
     df = load_model_input()
-    X_train, X_test, y_train, y_test = split_data(df)
-    print(f"Train: {len(X_train):,} rows | Test: {len(X_test):,} rows | "
-          f"positive rate train={y_train.mean():.3f} test={y_test.mean():.3f}")
+    X_train_full, X_test, y_train_full, y_test = split_data(df)   # test untouched
+    X_train, X_val, y_train, y_val = train_test_split(
+        X_train_full, y_train_full, test_size=0.25,
+        random_state=seed, stratify=y_train_full)
+    print(f"train={len(X_train):,}  val={len(X_val):,}  test(held out)={len(X_test):,}")
 
-    # scale_pos_weight = (#negatives / #positives) tells the boosters to pay
-    # proportionally more attention to the rare positive class.
-    n_pos = int(y_train.sum())
-    n_neg = int(len(y_train) - n_pos)
-    spw = n_neg / n_pos
-    print(f"scale_pos_weight (neg/pos) = {spw:.2f}")
+    preprocessor = build_preprocessor(X_train_full)
 
-    preprocessor = build_preprocessor(X_train)
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-
+    # --- 1) choose the best model on VALIDATION ROC-AUC ----------------------
     results = {}
     best_name, best_pipe, best_score = None, None, -1.0
-
-    for name, clf in get_candidate_models(spw).items():
-        print(f"\n=== {name} ===")
-        pipe = Pipeline([("prep", preprocessor), ("clf", clf)])
-
-        # 5-fold CV on TRAIN -> honest, leakage-free performance estimate.
-        # Parallelism rule that avoids thread oversubscription: run the 5 FOLDS
-        # in parallel (n_jobs=-1 here) while each MODEL stays single-threaded
-        # (n_jobs=1, set on the estimators above). The opposite combination
-        # makes LightGBM stall.
-        cv_auc = cross_val_score(pipe, X_train, y_train, cv=cv,
-                                 scoring="roc_auc", n_jobs=-1)
-        print(f"  CV ROC-AUC: {cv_auc.mean():.4f} +/- {cv_auc.std():.4f}")
-
-        # Fit on all of train, evaluate once on test.
+    for name, clf in get_candidate_models().items():
+        pipe = Pipeline([("prep", clone(preprocessor)), ("clf", clf)])
         pipe.fit(X_train, y_train)
-        metrics = evaluate_on_test(pipe, X_test, y_test)
-        metrics["cv_roc_auc_mean"] = float(cv_auc.mean())
-        metrics["cv_roc_auc_std"] = float(cv_auc.std())
-        for k, v in metrics.items():
-            print(f"  {k:18}: {v:.4f}")
-
-        # --- log this run's params + metrics to MLflow ---
-        # (We log the model ARTIFACT only once, for the winner, below -- saving
-        #  the heavy serialization on the models we won't ship.)
+        val_proba = pipe.predict_proba(X_val)[:, 1]
+        m = {
+            "val_roc_auc": roc_auc_score(y_val, val_proba),
+            "val_pr_auc": average_precision_score(y_val, val_proba),
+        }
+        results[name] = m
+        print(f"  {name:20} val ROC-AUC={m['val_roc_auc']:.4f} "
+              f"PR-AUC={m['val_pr_auc']:.4f}")
         with mlflow.start_run(run_name=name):
             mlflow.log_param("model", name)
             mlflow.log_params(clf.get_params())
-            mlflow.log_metrics(metrics)
+            mlflow.log_metrics(m)
+        if m["val_roc_auc"] > best_score:
+            best_name, best_pipe, best_score = name, pipe, m["val_roc_auc"]
+    print(f"\nSelected (by validation ROC-AUC): {best_name} ({best_score:.4f})")
 
-        results[name] = metrics
-        # Pick the best model by test ROC-AUC.
-        if metrics["test_roc_auc"] > best_score:
-            best_name, best_pipe, best_score = name, pipe, metrics["test_roc_auc"]
+    # --- 2) calibrate the winner on TRAIN, tune threshold on VALIDATION ------
+    # CalibratedClassifierCV refits the model internally with 5-fold CV and maps
+    # its raw scores onto honest probabilities.
+    calib_for_threshold = CalibratedClassifierCV(
+        clone(best_pipe), method="isotonic", cv=5)
+    calib_for_threshold.fit(X_train, y_train)
+    val_proba = calib_for_threshold.predict_proba(X_val)[:, 1]
+    threshold = best_f1_threshold(y_val, val_proba)
+    print(f"Tuned decision threshold (on validation): {threshold:.3f}")
 
-    # --- log + REGISTER the winning model in MLflow's model registry ---
-    # The model registry is how teams promote a chosen model to "production".
-    with mlflow.start_run(run_name=f"best_{best_name}"):
+    # --- 3) refit the FINAL calibrated model on ALL non-test data ------------
+    final_model = CalibratedClassifierCV(
+        clone(best_pipe), method="isotonic", cv=5)
+    final_model.fit(X_train_full, y_train_full)
+
+    # --- 4) register + save --------------------------------------------------
+    with mlflow.start_run(run_name=f"best_{best_name}_calibrated"):
         mlflow.log_param("model", best_name)
+        mlflow.log_param("calibration", "isotonic")
+        mlflow.log_param("decision_threshold", threshold)
         mlflow.log_metrics(results[best_name])
         mlflow.sklearn.log_model(
-            best_pipe, name="model",
-            registered_model_name=cfg["model"]["registered_name"],
-        )
+            final_model, name="model",
+            registered_model_name=cfg["model"]["registered_name"])
 
-    # --- also save the winning pipeline + a feature schema for the API/app ---
     out_dir = PROJECT_ROOT / cfg["model"]["output_dir"]
     out_dir.mkdir(parents=True, exist_ok=True)
-    joblib.dump(best_pipe, out_dir / "model.joblib")
+    joblib.dump(final_model, out_dir / "model.joblib")
+    with open(out_dir / "threshold.json", "w") as f:
+        json.dump({"threshold": threshold}, f, indent=2)
 
-    # Save the input schema (column -> dtype, plus categories) so the API and the
-    # Streamlit form know exactly what inputs the model expects.
     schema = {"numeric": [], "categorical": {}}
-    for col in X_train.columns:
-        if X_train[col].dtype == object:
-            # astype(str) guards against a column that mixes text and numbers
-            # when read back from CSV (sorted() can't compare str vs float).
-            schema["categorical"][col] = sorted(X_train[col].astype(str).unique())
+    for col in X_train_full.columns:
+        if X_train_full[col].dtype == object:
+            schema["categorical"][col] = sorted(X_train_full[col].astype(str).unique())
         else:
             schema["numeric"].append(col)
     with open(out_dir / "feature_schema.json", "w") as f:
         json.dump(schema, f, indent=2)
 
-    # Save the full model-comparison table for the README and the app.
     outputs_dir = PROJECT_ROOT / "outputs"
     outputs_dir.mkdir(parents=True, exist_ok=True)
     with open(outputs_dir / "model_comparison.json", "w") as f:
-        json.dump({"best": best_name, "results": results}, f, indent=2)
+        json.dump({"best": best_name, "selection_metric": "val_roc_auc",
+                   "results": results}, f, indent=2)
 
-    print(f"\nBEST MODEL: {best_name}  (test ROC-AUC = {best_score:.4f})")
-    print(f"Saved -> {(out_dir / 'model.joblib').relative_to(PROJECT_ROOT)}")
-    print(f"Saved -> {(out_dir / 'feature_schema.json').relative_to(PROJECT_ROOT)}")
-    print(f"\nView all runs with:  mlflow ui --backend-store-uri "
-          f"{cfg['mlflow']['tracking_uri']}")
+    print(f"\nSaved calibrated model + threshold ({threshold:.3f}) + schema.")
+    print("Run `python -m src.models.evaluate` for the honest TEST-set report.")
 
 
 if __name__ == "__main__":

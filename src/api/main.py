@@ -89,12 +89,17 @@ class Prediction(BaseModel):
 
 
 def _risk_band(p: float) -> str:
-    """Human-friendly risk label from the probability."""
-    if p >= 0.5:
-        return "High"
-    if p >= 0.25:
+    """Human-friendly risk label, relative to the tuned decision threshold.
+
+    Probabilities are calibrated (~9% base rate), so bands are anchored to the
+    threshold rather than to a fixed 0.5: below the threshold = Low (not flagged),
+    up to ~2x the threshold = Medium, beyond that = High.
+    """
+    if p < THRESHOLD:
+        return "Low"
+    if p < 2 * THRESHOLD:
         return "Medium"
-    return "Low"
+    return "High"
 
 
 @app.get("/")

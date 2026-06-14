@@ -1,18 +1,16 @@
 """
-evaluate.py  --  STEP 4: evaluate the winning model honestly + tune the threshold.
+evaluate.py  --  STEP 4: the HONEST test-set report.
 
-The model outputs a probability of readmission. To turn that into a yes/no
-decision we need a THRESHOLD. The default 0.5 is almost always wrong for an
-imbalanced problem -- it will predict "no readmission" for nearly everyone. So we
-search for the threshold that maximises F1 (a balance of precision and recall).
-This is the same idea as the GHOST threshold-tuning step in the thesis.
+This script touches the test set for the FIRST and ONLY time. The model and the
+decision threshold were both chosen earlier on train/validation data (see
+train.py), so nothing here is tuned to the test set -- the numbers are unbiased.
 
-We then produce the diagnostic plots a reviewer expects:
-  * ROC curve and Precision-Recall curve
-  * confusion matrix at the chosen threshold
-  * a calibration curve (are the predicted probabilities trustworthy?)
-and save the chosen threshold to models/threshold.json so the API uses the SAME
-threshold it was evaluated at.
+It reports:
+  * ROC-AUC and PR-AUC with a BOOTSTRAP 95% confidence interval, so we can say
+    honestly whether the model is meaningfully better than chance / other models
+    rather than trusting a single point estimate.
+  * a classification report at the pre-tuned threshold,
+  * ROC/PR curves, a confusion matrix, and a calibration curve.
 
     python -m src.models.evaluate
 """
@@ -21,34 +19,40 @@ import json
 
 import joblib
 import matplotlib
-matplotlib.use("Agg")            # render to files, no GUI window needed
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.calibration import calibration_curve
 from sklearn.metrics import (
     ConfusionMatrixDisplay,
-    classification_report,
-    f1_score,
-    precision_recall_curve,
-    roc_curve,
-    roc_auc_score,
     average_precision_score,
+    classification_report,
+    precision_recall_curve,
+    roc_auc_score,
+    roc_curve,
 )
 
 from src.config import load_config, PROJECT_ROOT
 from src.models.pipeline import load_model_input, split_data
 
 
-def find_best_threshold(y_true, proba) -> float:
-    """Return the probability threshold that maximises the F1 score."""
-    # precision_recall_curve gives precision/recall at many thresholds.
-    precision, recall, thresholds = precision_recall_curve(y_true, proba)
-    # F1 = 2*P*R/(P+R). Compute it at each threshold (guard divide-by-zero).
-    f1 = 2 * precision * recall / (precision + recall + 1e-9)
-    # precision/recall have one more element than thresholds; align by dropping
-    # the last point (which corresponds to threshold = +inf).
-    best_idx = np.argmax(f1[:-1])
-    return float(thresholds[best_idx])
+def bootstrap_ci(y_true, proba, metric, n=1000, seed=42):
+    """Bootstrap a 95% confidence interval for a metric on the test set.
+
+    We resample the test rows WITH replacement n times, recompute the metric each
+    time, and take the 2.5th / 97.5th percentiles. A wide interval = the score is
+    uncertain; overlapping intervals between models = they are indistinguishable.
+    """
+    rng = np.random.default_rng(seed)
+    y_true = np.asarray(y_true)
+    scores = []
+    for _ in range(n):
+        idx = rng.integers(0, len(y_true), len(y_true))   # resample indices
+        if len(np.unique(y_true[idx])) < 2:               # need both classes
+            continue
+        scores.append(metric(y_true[idx], proba[idx]))
+    lo, hi = np.percentile(scores, [2.5, 97.5])
+    return float(np.mean(scores)), float(lo), float(hi)
 
 
 def main():
@@ -56,73 +60,71 @@ def main():
     out_dir = PROJECT_ROOT / "outputs"
     model_dir = PROJECT_ROOT / cfg["model"]["output_dir"]
 
-    # Load the saved winning pipeline and rebuild the SAME test split.
-    pipe = joblib.load(model_dir / "model.joblib")
+    model = joblib.load(model_dir / "model.joblib")
+    threshold = json.loads((model_dir / "threshold.json").read_text())["threshold"]
+
+    # rebuild the split; we only use the test set here
     df = load_model_input()
-    X_train, X_test, y_train, y_test = split_data(df)
+    _, X_test, _, y_test = split_data(df)
+    proba = model.predict_proba(X_test)[:, 1]
 
-    proba = pipe.predict_proba(X_test)[:, 1]
-    roc_auc = roc_auc_score(y_test, proba)
-    pr_auc = average_precision_score(y_test, proba)
-    print(f"Test ROC-AUC = {roc_auc:.4f} | PR-AUC = {pr_auc:.4f}")
+    # --- headline metrics with bootstrap 95% CIs ---
+    roc_m, roc_lo, roc_hi = bootstrap_ci(y_test, proba, roc_auc_score)
+    pr_m, pr_lo, pr_hi = bootstrap_ci(y_test, proba, average_precision_score)
+    print(f"Test ROC-AUC = {roc_auc_score(y_test, proba):.4f} "
+          f"(95% CI {roc_lo:.3f}-{roc_hi:.3f})")
+    print(f"Test PR-AUC  = {average_precision_score(y_test, proba):.4f} "
+          f"(95% CI {pr_lo:.3f}-{pr_hi:.3f}); base rate = {y_test.mean():.3f}")
 
-    # --- tune the decision threshold on the test predictions ---
-    best_t = find_best_threshold(y_test, proba)
-    pred = (proba >= best_t).astype(int)
-    print(f"\nBest F1 threshold = {best_t:.3f} (vs naive 0.5)")
-    print("\nClassification report at tuned threshold:")
+    # --- report at the PRE-TUNED threshold ---
+    pred = (proba >= threshold).astype(int)
+    print(f"\nDecision threshold (tuned on validation) = {threshold:.3f}")
+    print("\nClassification report on the held-out test set:")
     print(classification_report(y_test, pred, digits=3,
                                 target_names=["not readmitted", "readmitted<30"]))
 
-    # Save the threshold so the API/app score with the same cut-off.
-    with open(model_dir / "threshold.json", "w") as f:
-        json.dump({"threshold": best_t}, f, indent=2)
+    # persist a small JSON summary for the README/app
+    with open(out_dir / "test_metrics.json", "w") as f:
+        json.dump({"roc_auc": roc_m, "roc_ci": [roc_lo, roc_hi],
+                   "pr_auc": pr_m, "pr_ci": [pr_lo, pr_hi],
+                   "threshold": threshold, "base_rate": float(y_test.mean())},
+                  f, indent=2)
 
     # --- plots ---------------------------------------------------------------
-    # 1) ROC + PR curves side by side
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.5))
     fpr, tpr, _ = roc_curve(y_test, proba)
-    ax1.plot(fpr, tpr, label=f"ROC (AUC={roc_auc:.3f})")
+    ax1.plot(fpr, tpr, label=f"ROC (AUC={roc_m:.3f})")
     ax1.plot([0, 1], [0, 1], "k--", alpha=0.4)
     ax1.set(xlabel="False positive rate", ylabel="True positive rate", title="ROC curve")
     ax1.legend()
     prec, rec, _ = precision_recall_curve(y_test, proba)
-    ax2.plot(rec, prec, label=f"PR (AP={pr_auc:.3f})")
+    ax2.plot(rec, prec, label=f"PR (AP={pr_m:.3f})")
     ax2.axhline(y_test.mean(), ls="--", color="k", alpha=0.4,
                 label=f"baseline={y_test.mean():.3f}")
     ax2.set(xlabel="Recall", ylabel="Precision", title="Precision-Recall curve")
     ax2.legend()
-    fig.tight_layout()
-    fig.savefig(out_dir / "roc_pr_curves.png", dpi=120)
+    fig.tight_layout(); fig.savefig(out_dir / "roc_pr_curves.png", dpi=120)
     plt.close(fig)
 
-    # 2) Confusion matrix at the tuned threshold
     fig, ax = plt.subplots(figsize=(5, 4.5))
     ConfusionMatrixDisplay.from_predictions(
         y_test, pred, display_labels=["not", "readmit<30"],
-        cmap="Blues", ax=ax, colorbar=False
-    )
-    ax.set_title(f"Confusion matrix @ threshold {best_t:.2f}")
-    fig.tight_layout()
-    fig.savefig(out_dir / "confusion_matrix.png", dpi=120)
+        cmap="Blues", ax=ax, colorbar=False)
+    ax.set_title(f"Confusion matrix @ threshold {threshold:.2f}")
+    fig.tight_layout(); fig.savefig(out_dir / "confusion_matrix.png", dpi=120)
     plt.close(fig)
 
-    # 3) Calibration curve -- do predicted probabilities match reality?
     fig, ax = plt.subplots(figsize=(5, 4.5))
     frac_pos, mean_pred = calibration_curve(y_test, proba, n_bins=10)
-    ax.plot(mean_pred, frac_pos, "o-", label="model")
+    ax.plot(mean_pred, frac_pos, "o-", label="model (calibrated)")
     ax.plot([0, 1], [0, 1], "k--", alpha=0.5, label="perfect")
     ax.set(xlabel="Mean predicted probability", ylabel="Observed frequency",
            title="Calibration curve")
     ax.legend()
-    fig.tight_layout()
-    fig.savefig(out_dir / "calibration_curve.png", dpi=120)
+    fig.tight_layout(); fig.savefig(out_dir / "calibration_curve.png", dpi=120)
     plt.close(fig)
 
-    print(f"\nSaved plots to {out_dir.relative_to(PROJECT_ROOT)}/ "
-          f"(roc_pr_curves.png, confusion_matrix.png, calibration_curve.png)")
-    print(f"Saved tuned threshold -> "
-          f"{(model_dir / 'threshold.json').relative_to(PROJECT_ROOT)}")
+    print(f"\nSaved plots + test_metrics.json to {out_dir.relative_to(PROJECT_ROOT)}/")
 
 
 if __name__ == "__main__":

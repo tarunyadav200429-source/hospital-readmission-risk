@@ -63,10 +63,11 @@ def risk_gauge(prob: float, threshold: float) -> go.Figure:
         gauge={
             "axis": {"range": [0, 100]},
             "bar": {"color": "darkblue"},
+            # bands anchored to the tuned threshold (probabilities are calibrated)
             "steps": [
-                {"range": [0, 25], "color": "#c8e6c9"},     # low  (green)
-                {"range": [25, 50], "color": "#fff9c4"},    # med  (yellow)
-                {"range": [50, 100], "color": "#ffcdd2"},   # high (red)
+                {"range": [0, threshold * 100], "color": "#c8e6c9"},        # low (green)
+                {"range": [threshold * 100, 2 * threshold * 100], "color": "#fff9c4"},  # med
+                {"range": [2 * threshold * 100, 100], "color": "#ffcdd2"},  # high (red)
             ],
             "threshold": {  # show the model's decision cut-off
                 "line": {"color": "black", "width": 3},
@@ -138,8 +139,8 @@ def main():
                 st.plotly_chart(risk_gauge(prob, threshold),
                                 use_container_width=True)
             with colB:
-                band = ("High" if prob >= 0.5 else
-                        "Medium" if prob >= 0.25 else "Low")
+                band = ("Low" if prob < threshold else
+                        "Medium" if prob < 2 * threshold else "High")
                 st.metric("Predicted probability", f"{prob*100:.1f}%")
                 st.metric("Risk band", band)
                 if prob >= threshold:

@@ -25,10 +25,11 @@ machine learning, and a genuinely **hard** prediction problem.
 
 | | |
 |---|---|
-| Best model | **XGBoost** (vs Logistic Regression, Random Forest, LightGBM) |
-| ROC-AUC (held-out test) | **0.654** |
-| PR-AUC | **0.181** (≈ 2× the 9% base rate) |
-| Decision threshold | tuned to **0.56** (F1-optimal, not naive 0.5) |
+| Best model | **XGBoost** (chosen on validation; vs LogReg, RF, LightGBM) |
+| ROC-AUC (held-out test) | **0.659** (95% CI 0.642–0.675) |
+| PR-AUC | **0.190** (≈ 2× the 9% base rate) |
+| Probabilities | **calibrated** (isotonic) — a "10%" really means ~10% |
+| Decision threshold | **0.128**, tuned on *validation* (not test) |
 
 **Readmission is intrinsically hard to predict** — published studies on this
 dataset report ROC-AUC around **0.64–0.68**, and this system sits squarely in that
@@ -82,28 +83,49 @@ data download ──► cleaning ──► feature engineering ──► model t
 3. **Real feature engineering.** 700+ raw ICD-9 diagnosis codes are grouped into
    **9 clinical categories**; derived features (`total_prior_visits`,
    `num_med_changes`) capture clinical intuition.
-4. **Imbalanced-learning done right.** The positive class is ~9%. I use
-   cost-sensitive learning (`class_weight` / `scale_pos_weight`), evaluate with
-   **threshold-independent metrics** (ROC-AUC, PR-AUC) plus a **tuned decision
-   threshold**, and check **probability calibration**.
+4. **Imbalanced-learning done right.** The positive class is ~9%. Rather than
+   reweighting (which distorts probabilities), I keep natural probabilities,
+   **calibrate** them (isotonic), handle the imbalance with a **tuned decision
+   threshold**, and report **threshold-independent metrics** (ROC-AUC, PR-AUC).
 5. **Leakage-safe pipeline.** All encoding/scaling lives inside a scikit-learn
    `Pipeline` fitted on the training fold only — so cross-validation and serving
    are honest.
 6. **Reproducibility & MLOps.** Config-driven, version-pinned, experiment-tracked,
    tested, containerised, CI-gated, and monitored for drift.
 
-## Model comparison
+## Model comparison (selection on the validation set)
 
-| Model | ROC-AUC | PR-AUC | Recall | Precision |
-|---|---|---|---|---|
-| **XGBoost** ✅ | **0.654** | 0.181 | 0.509 | 0.149 |
-| Logistic Regression | 0.651 | 0.172 | 0.532 | 0.140 |
-| Random Forest | 0.646 | 0.163 | 0.401 | 0.156 |
-| LightGBM | 0.645 | 0.185 | 0.461 | 0.150 |
+| Model | Validation ROC-AUC | Validation PR-AUC |
+|---|---|---|
+| **XGBoost** ✅ | **0.658** | 0.181 |
+| Random Forest | 0.650 | 0.176 |
+| LightGBM | 0.646 | 0.173 |
+| Logistic Regression | 0.642 | 0.164 |
 
-_(All evaluated on the same held-out 20% test set; selection by ROC-AUC.
-Recall/precision shown at the default 0.5 threshold for a like-for-like
-comparison; the shipped model uses the F1-tuned 0.56 threshold.)_
+XGBoost is selected on the **validation** set, then evaluated **once** on the
+untouched test set: **ROC-AUC 0.659 (95% CI 0.642–0.675)**. Note the models span
+only ~0.016 AUC and their bootstrap intervals overlap heavily — they are
+**statistically close to indistinguishable**, so "XGBoost is best" is a mild
+preference, not a strong claim (a point the project states honestly rather than
+overselling).
+
+## Methodology & rigor (how leakage is avoided)
+
+This project is deliberately strict about evaluation honesty:
+
+- **Three-way split — train / validation / test.** Models are *fit* on train,
+  *selected* on validation, and the threshold is *tuned* on validation. The test
+  set is touched **exactly once**, at the very end, so its numbers are unbiased.
+- **No threshold tuning on test, no model selection on test** — both are common
+  silent leaks that inflate reported scores. Here both happen on validation.
+- **Calibrated probabilities.** Isotonic calibration (5-fold) means the predicted
+  probabilities are trustworthy, not just rank-ordered — important because the app
+  shows a probability to a user.
+- **Bootstrap 95% confidence intervals** on the test metrics, so claims are
+  reported with their uncertainty (and competing models shown to be
+  statistically close).
+- **Leakage-safe feature pipeline** — all encoding/scaling is fit inside the
+  scikit-learn `Pipeline` on training folds only.
 
 ---
 
