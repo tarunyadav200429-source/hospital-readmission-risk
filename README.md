@@ -42,11 +42,12 @@ something it isn't.
 
 ## Why this problem matters
 
-Unplanned 30-day readmissions are a major cost and quality problem in healthcare —
-hospitals are financially penalised for them. If a hospital can flag the patients
-most likely to bounce back, it can target follow-up care (calls, medication
-review, home visits) where it helps most. This is a real, deployed use-case for
-machine learning, and a genuinely **hard** prediction problem.
+I picked this problem because it's real, not toy. Unplanned 30-day readmissions
+are a big cost and quality problem in healthcare, and hospitals get financially
+penalised for them. If you can flag the patients most likely to bounce back, you
+can point follow-up care (calls, medication review, home visits) at the people who
+need it most. That's an actual deployed use-case for machine learning — and it's a
+genuinely **hard** prediction problem, which is part of why I wanted to take it on.
 
 ## Headline results (honest)
 
@@ -58,11 +59,11 @@ machine learning, and a genuinely **hard** prediction problem.
 | Probabilities | **calibrated** (isotonic) — a "10%" really means ~10% |
 | Decision threshold | **0.121**, tuned on *validation* (not test) |
 
-**Readmission is intrinsically hard to predict** — published studies on this
+**Readmission is intrinsically hard to predict.** Published studies on this
 dataset report ROC-AUC around **0.64–0.68**, and this system sits squarely in that
-range. The value is in *ranking* who is most at risk, not perfect prediction. I
-deliberately report this honestly rather than over-claiming, and the app says so
-too.
+range. The value here is in *ranking* who is most at risk, not in perfect
+prediction. I'd rather report that honestly than over-claim, and the app says the
+same thing to anyone who uses it.
 
 ---
 
@@ -103,32 +104,32 @@ data download ──► cleaning ──► feature engineering ──► model t
 
 ## What makes this a *data-scientist* project (not just analysis)
 
-1. **Leakage control.** The same patients appear many times. I keep only each
-   patient's **first encounter** — this removed **29,353 leaking rows** (~30% of
-   the data) that would otherwise inflate the score. (Methodology of Strack et
-   al., 2014.)
-2. **Label-contamination fix.** Encounters ending in **death or hospice** are
-   dropped — those patients cannot be readmitted, so leaving them in poisons the
-   target.
-3. **Real feature engineering.** 700+ raw ICD-9 diagnosis codes are grouped into
-   **9 clinical categories**; derived features (`total_prior_visits`,
-   `num_med_changes`) capture clinical intuition.
-4. **Imbalanced-learning done right.** The positive class is ~9%. Rather than
-   reweighting (which distorts probabilities), I keep natural probabilities,
-   **calibrate** them (isotonic), handle the imbalance with a **tuned decision
-   threshold**, and report **threshold-independent metrics** (ROC-AUC, PR-AUC).
-5. **Bayesian hyperparameter optimisation.** Every model's hyperparameters are
-   searched with **scikit-optimize `BayesSearchCV`** (PR-AUC objective, fixed
-   seed) — efficient, reproducible tuning rather than hand-picked defaults.
-6. **Assumptions are checked, not assumed.** Parametric (logistic: independence,
-   multicollinearity/VIF, events-per-variable) vs non-parametric (tree) model
-   requirements are verified, and the models are compared **statistically**
-   (Friedman + Wilcoxon-Holm), not by eyeballing one number.
+1. **Leakage control.** The same patients show up many times, so I keep only each
+   patient's **first encounter**. That alone removed **29,353 leaking rows** (~30%
+   of the data) that would otherwise have inflated the score. (This follows the
+   methodology of Strack et al., 2014.)
+2. **Label-contamination fix.** I drop encounters ending in **death or hospice** —
+   those patients can't be readmitted, so leaving them in poisons the target.
+3. **Real feature engineering.** I grouped the 700+ raw ICD-9 diagnosis codes into
+   **9 clinical categories**, and added a few derived features
+   (`total_prior_visits`, `num_med_changes`) to capture clinical intuition.
+4. **Imbalanced-learning done right.** The positive class is only ~9%. Instead of
+   reweighting (which distorts the probabilities), I keep the natural
+   probabilities, **calibrate** them (isotonic), deal with the imbalance through a
+   **tuned decision threshold**, and report **threshold-independent metrics**
+   (ROC-AUC, PR-AUC).
+5. **Bayesian hyperparameter optimisation.** I search each model's hyperparameters
+   with **scikit-optimize `BayesSearchCV`** (PR-AUC objective, fixed seed) — that's
+   efficient and reproducible, rather than hand-picking defaults.
+6. **Assumptions are checked, not assumed.** I verify the parametric requirements
+   for logistic regression (independence, multicollinearity/VIF, events-per-
+   variable) against the non-parametric tree models, and I compare the models
+   **statistically** (Friedman + Wilcoxon-Holm) instead of eyeballing one number.
 7. **Leakage-safe pipeline.** All encoding/scaling lives inside a scikit-learn
-   `Pipeline` fitted on the training fold only — so cross-validation and serving
-   are honest.
-8. **Reproducibility & MLOps.** Config-driven, version-pinned, experiment-tracked,
-   tested, containerised, CI-gated, and monitored for drift.
+   `Pipeline` fitted on the training fold only, so cross-validation and serving
+   stay honest.
+8. **Reproducibility & MLOps.** Everything is config-driven, version-pinned,
+   experiment-tracked, tested, containerised, CI-gated, and monitored for drift.
 
 ## Model comparison (selection on the validation set)
 
@@ -139,40 +140,41 @@ data download ──► cleaning ──► feature engineering ──► model t
 | Random Forest | 0.653 | 0.178 |
 | Logistic Regression | 0.643 | 0.164 |
 
-XGBoost is selected on the **validation** set (by PR-AUC), then evaluated **once**
+I select XGBoost on the **validation** set (by PR-AUC), then evaluate it **once**
 on the untouched test set: **ROC-AUC 0.658 (95% CI 0.642–0.675)**. A Friedman test
-across the cross-validation folds does detect *some* difference among the four
-(χ²=10.7, **p=0.014**) — but that is driven almost entirely by **logistic
-regression lagging**; the three tree models are statistically indistinguishable
-from one another (every pairwise Wilcoxon–Holm comparison is non-significant, XGBoost
-vs LightGBM p=1.0). So "XGBoost is best" is a mild preference over LightGBM/RF, not a
-strong claim — and the project says so rather than overselling.
+across the cross-validation folds does pick up *some* difference among the four
+(χ²=10.7, **p=0.014**), but that's driven almost entirely by **logistic regression
+lagging**. The three tree models are statistically indistinguishable from each
+other — every pairwise Wilcoxon–Holm comparison is non-significant (XGBoost vs
+LightGBM p=1.0). So when I say "XGBoost is best", it's a mild preference over
+LightGBM/RF, not a strong claim, and I'd rather say that plainly than oversell it.
 
 ## Methodology & rigor (how leakage is avoided)
 
-This project is deliberately strict about evaluation honesty:
+I was deliberately strict about evaluation honesty, because it's the easiest place
+to fool yourself:
 
-- **Three-way split — train / validation / test.** Models are *fit* on train,
-  *selected* on validation, and the threshold is *tuned* on validation. The test
-  set is touched **exactly once**, at the very end, so its numbers are unbiased.
-- **No threshold tuning on test, no model selection on test** — both are common
-  silent leaks that inflate reported scores. Here both happen on validation.
+- **Three-way split — train / validation / test.** I *fit* on train, *select* on
+  validation, and *tune* the threshold on validation. The test set gets touched
+  **exactly once**, at the very end, so its numbers are unbiased.
+- **No threshold tuning on test, no model selection on test.** Both are common
+  silent leaks that inflate reported scores, so I keep both on validation.
 - **Calibrated probabilities.** Isotonic calibration (5-fold) means the predicted
-  probabilities are trustworthy, not just rank-ordered — important because the app
-  shows a probability to a user.
-- **Bootstrap 95% confidence intervals** on the test metrics, so claims are
-  reported with their uncertainty (and competing models shown to be
-  statistically close).
+  probabilities are trustworthy, not just rank-ordered — which matters because the
+  app shows an actual probability to the user.
+- **Bootstrap 95% confidence intervals** on the test metrics, so I report claims
+  with their uncertainty (and show the competing models to be statistically close).
 - **Bayesian hyperparameter optimisation** (`BayesSearchCV`, PR-AUC objective)
   tunes each model via cross-validation **inside the training set only** — the
-  search never sees validation or test data. `scale_pos_weight`/class weights are
-  deliberately excluded from the search so the probabilities stay calibratable.
-- **Model assumptions verified** (`python -m src.models.diagnostics`): logistic
-  regression's parametric assumptions (independence — engineered via first-
-  encounter dedup; VIF multicollinearity; events-per-variable) are checked, while
-  the tree models' freedom from those assumptions is documented. The four models
-  are then compared with a **Friedman test + Wilcoxon-Holm** post-hoc — reported
-  honestly as illustrative given a single dataset.
+  search never sees validation or test data. I deliberately leave
+  `scale_pos_weight`/class weights out of the search so the probabilities stay
+  calibratable.
+- **Model assumptions verified** (`python -m src.models.diagnostics`): I check
+  logistic regression's parametric assumptions (independence — engineered via
+  first-encounter dedup; VIF multicollinearity; events-per-variable), and document
+  why the tree models are free of them. Then I compare the four models with a
+  **Friedman test + Wilcoxon-Holm** post-hoc — which I treat as illustrative,
+  given it's a single dataset.
 - **Leakage-safe feature pipeline** — all encoding/scaling is fit inside the
   scikit-learn `Pipeline` on training folds only.
 
@@ -237,15 +239,17 @@ pytest -v
 
 ## Limitations & future work
 
-- **Predictability ceiling.** ROC-AUC ~0.65 reflects how hard readmission is from
-  administrative data alone; richer clinical/lab/time-series data would help.
-- **Single dataset, single era** (1999–2008, US hospitals) — external validity is
-  limited; the model should be re-validated and re-calibrated before any real use.
+- **Predictability ceiling.** ROC-AUC ~0.65 reflects how hard readmission is to
+  predict from administrative data alone; richer clinical/lab/time-series data
+  would help, but I didn't have it.
+- **Single dataset, single era** (1999–2008, US hospitals), so external validity is
+  limited. I'd re-validate and re-calibrate the model before trusting it anywhere
+  real.
 - **Not for clinical use.** This is a portfolio/educational project, not a
-  validated medical device.
-- **Next steps:** SHAP explanations per prediction, native categorical / target
-  encoding, automated retraining when drift is detected, deploy the API behind a
-  cloud host.
+  validated medical device, and I want to be clear about that.
+- **What I'd do next:** SHAP explanations per prediction, native categorical /
+  target encoding, automated retraining when drift is detected, and deploying the
+  API behind a proper cloud host.
 
 ## Data
 
